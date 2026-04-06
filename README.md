@@ -10,6 +10,11 @@
 
 Ultimate camera streaming application with support for RTSP, WebRTC, HomeKit, FFmpeg, RTMP, etc.
 
+> **This is a fork of [AlexxIT/go2rtc](https://github.com/AlexxIT/go2rtc) with added multi-camera ONVIF server support for Unifi Protect.**
+> Pre-built binaries and Docker images are available — see the [ONVIF section](#module-onvif) for details.
+>
+> If you find this useful: [Buy me a coffee](https://paypal.me/NWaterton)
+
 ![](assets/go2rtc.png)
 
 - zero-dependency and zero-config [small app](#go2rtc-binary) for all OS (Windows, macOS, Linux, ARM)
