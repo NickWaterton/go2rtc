@@ -1454,6 +1454,8 @@ Then run `sudo netplan apply`.
 2. If auto-scan fails, use **Advanced Adoption**: enter `<ip>:<port>` for each camera (e.g. `192.168.1.191:8081` and `192.168.1.192:8082`).
 3. Each profile defined in `onvif.profiles` with its own `port` appears as a separate camera.
 
+> **Login and password:** Both automatic discovery and Advanced Adoption will prompt for a username and password. go2rtc does not implement ONVIF authentication, so these credentials are ignored — enter anything you like (e.g. `admin` / `admin`).
+
 **Example Dahua NVR configuration:**
 - **Channel**: <camera channel on NVR>
 - **Manufacturer**: ONVIF
