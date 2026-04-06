@@ -179,7 +179,7 @@ streamName#res=WxH#codec=X#framerate=N#kbps=N#audio=X
 
 ### go2rtc: Binary
 
-Download binary for your OS from [latest release](https://github.com/AlexxIT/go2rtc/releases/):
+> **This fork** — download from [NickWaterton/go2rtc releases](https://github.com/NickWaterton/go2rtc/releases/latest):
 
 - `go2rtc_win64.zip` - Windows 10+ 64-bit
 - `go2rtc_win32.zip` - Windows 10+ 32-bit
@@ -199,7 +199,19 @@ Don't forget to fix the rights `chmod +x go2rtc_xxx_xxx` on Linux and Mac.
 
 ### go2rtc: Docker
 
-The Docker container [`alexxit/go2rtc`](https://hub.docker.com/r/alexxit/go2rtc) supports multiple architectures including `amd64`, `386`, `arm64`, and `arm`. This container offers the same functionality as the [Home Assistant Add-on](#go2rtc-home-assistant-add-on) but is designed to operate independently of Home Assistant. It comes preinstalled with [FFmpeg](#source-ffmpeg), [ngrok](#module-ngrok), and [Python](#source-echo).
+> **This fork** — Docker images are published to [`smarttinker/go2rtc`](https://hub.docker.com/r/smarttinker/go2rtc):
+
+```bash
+# Latest stable (master branch)
+docker pull smarttinker/go2rtc:master
+
+# Run with host networking (required for WS-Discovery multicast on port 3702)
+docker run --network host -v /path/to/go2rtc.yaml:/config/go2rtc.yaml smarttinker/go2rtc:master
+```
+
+> **Important:** Use `--network host` so that WS-Discovery (UDP multicast on port 3702) works correctly and Unifi Protect can auto-discover your cameras. Each Docker container gets its own MAC address, so multiple containers can each host a separate camera and be independently discovered by Unifi Protect — no macvlan setup needed.
+
+The original upstream Docker container [`alexxit/go2rtc`](https://hub.docker.com/r/alexxit/go2rtc) supports multiple architectures including `amd64`, `386`, `arm64`, and `arm`. This container offers the same functionality as the [Home Assistant Add-on](#go2rtc-home-assistant-add-on) but is designed to operate independently of Home Assistant. It comes preinstalled with [FFmpeg](#source-ffmpeg), [ngrok](#module-ngrok), and [Python](#source-echo).
 
 ### go2rtc: Home Assistant Add-on
 
