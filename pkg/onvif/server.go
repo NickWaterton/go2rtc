@@ -481,6 +481,20 @@ func GetOSDsResponse(configurationToken string, cameraName string) []byte {
 	return e.Bytes()
 }
 
+// GetScopesResponse returns a dynamic GetScopes response using the given device name.
+// Spaces in name are percent-encoded so the scope URI is valid.
+func GetScopesResponse(name string) []byte {
+	encoded := strings.ReplaceAll(name, " ", "%20")
+	e := NewEnvelope()
+	e.Append(`<tds:GetScopesResponse>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/`, encoded, `</tt:ScopeItem></tds:Scopes>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/location/github</tt:ScopeItem></tds:Scopes>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/Network_Video_Transmitter</tt:ScopeItem></tds:Scopes>
+</tds:GetScopesResponse>`)
+	return e.Bytes()
+}
+
 func StaticResponse(operation string) []byte {
 	switch operation {
 	case DeviceGetSystemDateAndTime:
@@ -502,12 +516,6 @@ var responses = map[string]string{
 
 	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse />`,
 	DeviceGetNetworkProtocols:  `<tds:GetNetworkProtocolsResponse />`,
-	DeviceGetScopes: `<tds:GetScopesResponse>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/go2rtc</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/location/github</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/Network_Video_Transmitter</tt:ScopeItem></tds:Scopes>
-</tds:GetScopesResponse>`,
 
 	MediaGetAudioEncoderConfigurations: `<trt:GetAudioEncoderConfigurationsResponse />`,
 	MediaGetAudioSources:               `<trt:GetAudioSourcesResponse />`,

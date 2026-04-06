@@ -23,28 +23,32 @@ var (
 type deviceEntry struct {
 	uuid string
 	port int
+	name string // human-readable name used in WS-Discovery scopes
 }
 
 // RegisterDevice registers an additional per-camera ONVIF device endpoint that
 // will be included in WS-Discovery ProbeMatches responses alongside the main device.
 // Must be called before StartDiscoveryServer. Returns the UUID for this device.
-func RegisterDevice(port int) string {
+func RegisterDevice(port int, name string) string {
 	uuid := UUID()
-	registeredDevices = append(registeredDevices, deviceEntry{uuid: uuid, port: port})
+	registeredDevices = append(registeredDevices, deviceEntry{uuid: uuid, port: port, name: name})
 	return uuid
 }
 
 // StartDiscoveryServer listens for WS-Discovery Probe messages on UDP multicast
-// 239.255.255.250:3702 and responds with a ProbeMatches reply containing one
-// ProbeMatch entry per registered device (main device + any per-camera devices).
+// 239.255.255.250:3702. For each Probe it sends one ProbeMatches response per
+// registered device (separate UDP packets) for maximum client compatibility —
+// some ONVIF clients (including Unifi Protect) only process the first ProbeMatch
+// in a combined response.
 //
 // apiPort is the HTTP port of the main go2rtc API server (e.g. 1984).
+// deviceName is the name advertised for the main device in WS-Discovery scopes.
 // All RegisterDevice calls must complete before calling this function.
-func StartDiscoveryServer(apiPort int) error {
+func StartDiscoveryServer(apiPort int, deviceName string) error {
 	// Snapshot all devices at start time. No mutex needed since all
 	// RegisterDevice calls happen in Init() before this is called.
 	allDevices := make([]deviceEntry, 0, 1+len(registeredDevices))
-	allDevices = append(allDevices, deviceEntry{uuid: deviceUUID, port: apiPort})
+	allDevices = append(allDevices, deviceEntry{uuid: deviceUUID, port: apiPort, name: deviceName})
 	allDevices = append(allDevices, registeredDevices...)
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 3702})
@@ -87,8 +91,14 @@ func discoveryLoop(conn *net.UDPConn, devices []deviceEntry) {
 		}
 
 		msgID := FindTagValue(body, "MessageID")
-		resp := buildProbeMatchResponse(msgID, devices)
-		_, _ = conn.WriteToUDP(resp, from)
+
+		// Send one separate ProbeMatches response per device.
+		// Unifi Protect (and many other clients) only process the first
+		// ProbeMatch in a combined multi-ProbeMatch response.
+		for _, dev := range devices {
+			resp := buildProbeMatchResponse(msgID, dev)
+			_, _ = conn.WriteToUDP(resp, from)
+		}
 	}
 }
 
@@ -121,30 +131,22 @@ func buildXAddrsForPort(port int) string {
 	return strings.Join(xaddrs, " ")
 }
 
-const discoveryScopes = "onvif://www.onvif.org/name/go2rtc " +
-	"onvif://www.onvif.org/location/github " +
-	"onvif://www.onvif.org/Profile/Streaming " +
-	"onvif://www.onvif.org/type/Network_Video_Transmitter"
+// buildDiscoveryScopes returns the WS-Discovery scope string for a device,
+// embedding the device name (percent-encoded) in the name scope item.
+func buildDiscoveryScopes(name string) string {
+	encoded := strings.ReplaceAll(name, " ", "%20")
+	return "onvif://www.onvif.org/name/" + encoded + " " +
+		"onvif://www.onvif.org/location/github " +
+		"onvif://www.onvif.org/Profile/Streaming " +
+		"onvif://www.onvif.org/type/Network_Video_Transmitter"
+}
 
-// buildProbeMatchResponse builds a WS-Discovery ProbeMatches SOAP envelope with
-// one <ProbeMatch> element per registered device.
-func buildProbeMatchResponse(relatesTo string, devices []deviceEntry) []byte {
-	var matches strings.Builder
-	for _, dev := range devices {
-		xaddrs := buildXAddrsForPort(dev.port)
-		if xaddrs == "" {
-			continue
-		}
-		matches.WriteString(`      <d:ProbeMatch>
-        <a:EndpointReference>
-          <a:Address>urn:uuid:` + dev.uuid + `</a:Address>
-        </a:EndpointReference>
-        <d:Types>dn:NetworkVideoTransmitter</d:Types>
-        <d:Scopes>` + discoveryScopes + `</d:Scopes>
-        <d:XAddrs>` + xaddrs + `</d:XAddrs>
-        <d:MetadataVersion>1</d:MetadataVersion>
-      </d:ProbeMatch>
-`)
+// buildProbeMatchResponse builds a WS-Discovery ProbeMatches SOAP envelope
+// containing a single ProbeMatch for the given device.
+func buildProbeMatchResponse(relatesTo string, dev deviceEntry) []byte {
+	xaddrs := buildXAddrsForPort(dev.port)
+	if xaddrs == "" {
+		return nil
 	}
 
 	return []byte(`<?xml version="1.0" encoding="utf-8"?>
@@ -160,7 +162,16 @@ func buildProbeMatchResponse(relatesTo string, devices []deviceEntry) []byte {
   </s:Header>
   <s:Body>
     <d:ProbeMatches>
-` + matches.String() + `    </d:ProbeMatches>
+      <d:ProbeMatch>
+        <a:EndpointReference>
+          <a:Address>urn:uuid:` + dev.uuid + `</a:Address>
+        </a:EndpointReference>
+        <d:Types>dn:NetworkVideoTransmitter</d:Types>
+        <d:Scopes>` + buildDiscoveryScopes(dev.name) + `</d:Scopes>
+        <d:XAddrs>` + xaddrs + `</d:XAddrs>
+        <d:MetadataVersion>1</d:MetadataVersion>
+      </d:ProbeMatch>
+    </d:ProbeMatches>
   </s:Body>
 </s:Envelope>`)
 }

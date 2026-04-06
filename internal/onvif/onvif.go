@@ -35,7 +35,7 @@ func Init() {
 	streams.HandleFunc("onvif", streamOnvif)
 
 	// Main ONVIF server on the go2rtc API port — serves all profiles.
-	api.HandleFunc("/onvif/", makeOnvifHandler(OnvifProfiles, api.Port))
+	api.HandleFunc("/onvif/", makeOnvifHandler(OnvifProfiles, api.Port, "go2rtc"))
 
 	// ONVIF client autodiscovery endpoint
 	api.HandleFunc("api/onvif", apiOnvif)
@@ -48,13 +48,13 @@ func Init() {
 			continue
 		}
 		p := profile // capture loop variable
-		uuid := onvif.RegisterDevice(p.Port)
-		handler := makeOnvifHandler([]onvif.OnvifProfile{p}, api.Port)
+		uuid := onvif.RegisterDevice(p.Port, p.Name)
+		handler := makeOnvifHandler([]onvif.OnvifProfile{p}, api.Port, p.Name)
 		go startCameraServer(p.Port, uuid, handler)
 	}
 
 	// WS-Discovery server (must start after all RegisterDevice calls).
-	if err := onvif.StartDiscoveryServer(api.Port); err != nil {
+	if err := onvif.StartDiscoveryServer(api.Port, "go2rtc"); err != nil {
 		log.Warn().Err(err).Msg("[onvif] WS-Discovery server failed to start (port 3702 in use?)")
 	} else {
 		log.Info().Int("port", 3702).Msg("[onvif] WS-Discovery server listening")
@@ -88,7 +88,8 @@ func startCameraServer(port int, uuid string, handler http.HandlerFunc) {
 // makeOnvifHandler returns an ONVIF device service handler scoped to the given
 // profiles. mainAPIPort is the go2rtc API port used for snapshot URLs (the
 // snapshot endpoint always lives on the main server, not per-camera servers).
-func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int) http.HandlerFunc {
+// deviceName is advertised in GetScopes and GetDeviceInformation responses.
+func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int, deviceName string) http.HandlerFunc {
 	// Local camera-name lookup scoped to this handler's profiles.
 	cameraName := func(streamName string) string {
 		for _, p := range profiles {
@@ -126,11 +127,13 @@ func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int) http.Handl
 			onvif.DeviceGetNetworkDefaultGateway,
 			onvif.DeviceGetNetworkProtocols,
 			onvif.DeviceGetNTP,
-			onvif.DeviceGetScopes,
 			onvif.MediaGetAudioEncoderConfigurations,
 			onvif.MediaGetAudioSources,
 			onvif.MediaGetAudioSourceConfigurations:
 			b = onvif.StaticResponse(operation)
+
+		case onvif.DeviceGetScopes:
+			b = onvif.GetScopesResponse(deviceName)
 
 		case onvif.MediaGetVideoEncoderConfigurations:
 			b = onvif.GetVideoEncoderConfigurationsResponse(profiles)
@@ -152,7 +155,7 @@ func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int) http.Handl
 		case onvif.DeviceGetDeviceInformation:
 			// important for Hass: SerialNumber (unique server ID)
 			// r.Host includes port so each per-camera server has a unique serial.
-			b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
+			b = onvif.GetDeviceInformationResponse("", deviceName, app.Version, r.Host)
 
 		case onvif.ServiceGetServiceCapabilities:
 			// important for Hass
