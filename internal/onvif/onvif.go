@@ -70,9 +70,13 @@ func Init() {
 	// Include the main go2rtc device in WS-Discovery only when at least one
 	// profile has no dedicated port — otherwise Unifi Protect would also
 	// discover the generic "go2rtc" device and display its name pre-adoption.
+	// Include the main go2rtc device only if there is at least one profile
+	// that has streams but no dedicated port (it needs the main server).
+	// Profiles with dedicated ports serve themselves; profiles with no streams
+	// are inactive and should not cause anything to be advertised.
 	includeMain := len(OnvifProfiles) == 0
 	for _, p := range OnvifProfiles {
-		if p.Port <= 0 || len(p.Streams) == 0 {
+		if p.Port <= 0 && len(p.Streams) > 0 {
 			includeMain = true
 			break
 		}
