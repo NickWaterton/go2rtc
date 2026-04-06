@@ -41,6 +41,71 @@ Ultimate camera streaming application with support for RTSP, WebRTC, HomeKit, FF
 
 ---
 
+## Fork: NickWaterton/go2rtc — Unifi Protect ONVIF Integration
+
+> **This is a fork of [AlexxIT/go2rtc](https://github.com/AlexxIT/go2rtc).** The primary goal is to expose RTSP cameras to **Unifi Protect** by making go2rtc act as a fully-featured ONVIF device that Unifi Protect can discover and add natively.
+
+### What's different in this fork
+
+#### 1. WS-Discovery server (auto-discovery)
+
+go2rtc now listens on UDP multicast `239.255.255.250:3702` and responds to WS-Discovery Probe messages. This means Unifi Protect (and other ONVIF clients) can automatically discover go2rtc on the local network — no manual IP entry needed.
+
+#### 2. Enhanced ONVIF server for Unifi Protect
+
+The ONVIF server has been significantly extended to satisfy the full set of SOAP operations that Unifi Protect issues during camera setup and streaming:
+
+| ONVIF Operation | Status |
+|-----------------|--------|
+| `GetCapabilities` | ✅ |
+| `GetServices` | ✅ |
+| `GetDeviceInformation` | ✅ |
+| `GetProfiles` / `GetProfile` | ✅ |
+| `GetVideoSources` | ✅ |
+| `GetVideoSourceConfigurations` / `GetVideoSourceConfiguration` | ✅ Fixed to return proper `VideoSourceConfiguration` elements |
+| `GetVideoEncoderConfigurations` | ✅ |
+| `GetStreamUri` | ✅ |
+| `GetSnapshotUri` | ✅ |
+| `GetOSDs` / `GetOSDOptions` | ✅ Returns camera name label + timestamp overlay |
+| `GetSystemDateAndTime` | ✅ |
+| `GetServiceCapabilities` | ✅ |
+
+#### 3. Configurable stream metadata
+
+Each stream in the ONVIF profile can carry metadata that go2rtc advertises to ONVIF clients. Append parameters to the stream name using `#`:
+
+```
+streamName#res=WxH#codec=X#framerate=N#kbps=N#audio=X
+```
+
+| Parameter | Default | Example |
+|-----------|---------|---------|
+| `res` | `1920x1080` | `res=1280x720` |
+| `codec` | `H264` | `codec=H265` |
+| `framerate` | `30` | `framerate=15` |
+| `kbps` | `0` (unlimited) | `kbps=4000` |
+| `audio` | _(none)_ | `audio=AAC` |
+
+#### 4. Bug fixes vs original fork base
+
+- HTTP client timeout was 5000 s (~83 minutes) — fixed to 5 s
+- ONVIF token naming was inconsistent between `GetProfiles` and `GetVideoEncoderConfigurations` — now consistent
+- `quality` field was not reset between cameras when multiple profiles were configured
+- `GetVideoSourceConfigurations` was incorrectly returning full media profiles instead of lightweight `VideoSourceConfiguration` elements
+- OSD `VideoSourceConfigurationToken` was being constructed with the wrong suffix
+
+### Unifi Protect setup
+
+1. Build and run go2rtc with this fork (see [Fast start](#fast-start) below).
+2. Configure your streams and ONVIF profiles (see [Module: ONVIF](#module-onvif)).
+3. In Unifi Protect: **Add Device → ONVIF → Scan** — go2rtc should appear automatically.
+   - If scan doesn't find it, add manually with: Host = `<go2rtc IP>`, Port = `1984`.
+4. Unifi Protect will query `GetProfiles` and map each stream to a camera channel.
+
+> **Note:** Unifi Protect requires port `3702/UDP` to be reachable for WS-Discovery. If go2rtc is running in Docker, use `--network host`.
+
+---
+
 * [Fast start](#fast-start)
   * [go2rtc: Binary](#go2rtc-binary)
   * [go2rtc: Docker](#go2rtc-docker)
@@ -86,6 +151,7 @@ Ultimate camera streaming application with support for RTSP, WebRTC, HomeKit, FF
   * [Module: MP4](#module-mp4)
   * [Module: HLS](#module-hls)
   * [Module: MJPEG](#module-mjpeg)
+  * [Module: ONVIF](#module-onvif)
   * [Module: Log](#module-log)
 * [Security](#security)
 * [Codecs filters](#codecs-filters)
@@ -175,6 +241,7 @@ Available modules:
 - [mp4](#module-mp4) - MSE, MP4 stream and MP4 snapshot Server
 - [hls](#module-hls) - HLS TS or fMP4 stream Server
 - [mjpeg](#module-mjpeg) - MJPEG Server
+- [onvif](#module-onvif) - ONVIF server
 - [ffmpeg](#source-ffmpeg) - FFmpeg integration
 - [ngrok](#module-ngrok) - ngrok integration (external access for private network)
 - [hass](#module-hass) - Home Assistant integration
@@ -1116,7 +1183,7 @@ You have several options on how to add a camera to Home Assistant:
 2. Camera [any source](#module-streams) => [go2rtc config](#configuration) => [Generic Camera](https://www.home-assistant.io/integrations/generic/)
    - Install any [go2rtc](#fast-start)
    - Add your stream to [go2rtc config](#configuration)
-   - Hass > Settings > Integrations > Add Integration > [ONVIF](https://my.home-assistant.io/redirect/config_flow_start/?domain=onvif) > Host: `127.0.0.1`, Port: `1984`
+   - Hass > Settings > Integrations > Add Integration > [ONVIF](https://my.home-assistant.io/redirect/config_flow_start/?domain=onvif) > Host: `127.0.0.1`, Port: `1984` (using [Module: ONVIF](#module-onvif))
    - Hass > Settings > Integrations > Add Integration > [Generic Camera](https://my.home-assistant.io/redirect/config_flow_start/?domain=generic) > Stream Source URL: `rtsp://127.0.0.1:8554/camera1` (change to your stream name, leave everything else as is)
 
 You have several options on how to watch the stream from the cameras in Home Assistant:
@@ -1211,6 +1278,69 @@ API examples:
 **PS.** This module also supports streaming to the server console (terminal) in the **animated ASCII art** format ([read more](https://github.com/AlexxIT/go2rtc/blob/master/internal/mjpeg/README.md)):
 
 [![](https://img.youtube.com/vi/sHj_3h_sX7M/mqdefault.jpg)](https://www.youtube.com/watch?v=sHj_3h_sX7M)
+
+### Module: ONVIF
+
+This module provides an **ONVIF server** that allows go2rtc to act as an ONVIF-compatible device, making it easier to integrate cameras with ONVIF-supported software like Unifi Protect, Dahua NVRs, or Home Assistant.
+
+With ONVIF support, go2rtc can:
+- Expose configured streams as ONVIF profiles advertised to any ONVIF client.
+- Be **automatically discovered** by Unifi Protect and other ONVIF clients via WS-Discovery (UDP multicast `239.255.255.250:3702`).
+- Provide `GetOSDs` responses that show the configured camera name and a timestamp overlay in supported NVRs.
+- Maintain a **consistent camera order** to prevent issues with NVRs that rely on `GetProfilesResponse` for identification.
+
+**Example Configuration**
+
+```yaml
+onvif:
+  profiles:
+    - name: Front Door
+      streams:
+        - frontdoor#res=1920x1080#codec=H264#framerate=15#kbps=4000
+        - frontdoor_lq#res=640x360#codec=H264#framerate=10#kbps=512
+    - name: Backyard
+      streams:
+        - backyard#res=1920x1080#codec=H265
+        - backyard_lq#res=1280x720#codec=H265#audio=AAC
+
+streams:
+  frontdoor:
+    - rtsp://admin:password@192.168.1.10/stream1
+  frontdoor_lq:
+    - rtsp://admin:password@192.168.1.10/stream2
+  backyard:
+    - rtsp://admin:password@192.168.1.11/stream1
+  backyard_lq:
+    - rtsp://admin:password@192.168.1.11/stream2
+```
+
+**Stream metadata parameters** (appended to the stream name with `#`):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `res=WxH` | `1920x1080` | Resolution advertised to ONVIF clients |
+| `codec=X` | `H264` | Codec (`H264`, `H265`) |
+| `framerate=N` | `30` | Frame rate |
+| `kbps=N` | `0` (unlimited) | Max bitrate in kbps |
+| `audio=X` | _(none)_ | Audio codec (`AAC`, `G711`, etc.) |
+
+**WS-Discovery** (auto-discovery by ONVIF clients):
+
+go2rtc automatically listens on UDP port `3702` and responds to WS-Discovery Probe messages. Unifi Protect and other ONVIF clients will find it without any manual IP configuration. If running in Docker, use `--network host` to allow multicast traffic through.
+
+**Example Unifi Protect setup:**
+1. In Unifi Protect: **Add Device → ONVIF → Scan** — go2rtc appears automatically.
+2. If auto-scan fails, add manually: Host = `<go2rtc IP>`, Port = `1984`.
+3. Each profile defined in `onvif.profiles` appears as a separate camera channel.
+
+**Example Dahua NVR configuration:**
+- **Channel**: <camera channel on NVR>
+- **Manufacturer**: ONVIF
+- **IP Address**: <go2rtc IP>
+- **RTSP Port**: Self-adaptive
+- **HTTP Port**: <go2rtc http api port, default 1984>
+- **Username / Password**: Currently auth is not supported by go2rtc
+- **Remote CH No.**: <camera index from onvif array, counting from 1>
 
 ### Module: Log
 
