@@ -1352,6 +1352,42 @@ streams:
 > they are reachable from Unifi Protect. The main API port (default 1984) still
 > serves all profiles as a single multi-channel device for backward compatibility.
 
+**Real-world example — Bambu Lab 3D printer cameras in Unifi Protect**
+
+Bambu Lab printers expose an RTSP camera stream accessible over the local network.
+The Access Code and IP address are shown on the printer's **LAN Only Mode** page
+(LAN Only Mode does not need to be *enabled* — the credentials are visible regardless).
+
+```yaml
+streams:
+  BambuP2S:
+    # Bambu Lab P2S — main stream name used as the ONVIF profile token
+    - rtsps://bblp:<AccessCode>@<PrinterIP>:322/streaming/live/1
+  BambuP1S:
+    # Bambu Lab P1S
+    - rtsps://bblp:<AccessCode>@<PrinterIP>:322/streaming/live/1
+
+onvif:
+  profiles:
+    - name: P2SCamera
+      port: 8081
+      # No ip: needed for the first camera — uses the host's main IP
+      streams:
+        - BambuP2S#res=1920x1080#codec=H264#framerate=15
+
+    - name: P1SCamera
+      port: 8082
+      ip: 192.168.1.192     # macvlan virtual IP — gives this camera its own MAC
+      streams:
+        - BambuP1S#res=1280x720#codec=H264#framerate=1
+```
+
+The stream name in `streams:` (e.g. `BambuP2S`) must match the name used in the
+`onvif.profiles` stream list (before the first `#`). After adoption in Unifi Protect,
+the camera name will be set to `<ProfileName> go2rtc` (e.g. `P2SCamera go2rtc`) —
+you can rename it to anything you like in the Unifi Protect UI. The Model field will
+show `go2rtc`.
+
 **Stream metadata parameters** (appended to the stream name with `#`):
 
 | Parameter | Default | Description |

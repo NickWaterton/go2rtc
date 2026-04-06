@@ -182,8 +182,11 @@ func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int, deviceName
 		case onvif.DeviceGetDeviceInformation:
 			// important for Hass: SerialNumber (unique server ID)
 			// r.Host includes port so each per-camera server has a unique serial.
-			// Manufacturer = camera name (shown in Unifi Protect pre-adoption scope display).
-			// Model = "go2rtc" (shown post-adoption; also used by Unifi Protect as pre-adoption model label).
+			// Unifi Protect auto-names devices as Manufacturer + " " + Model.
+			// UP's "Model" field displays the ONVIF Model value.
+			// Manufacturer = camera name, Model = "go2rtc" gives:
+			//   UP auto-name: "<cameraName> go2rtc" (editable in UP UI)
+			//   UP model field: "go2rtc"
 			b = onvif.GetDeviceInformationResponse(deviceName, "go2rtc", app.Version, r.Host)
 
 		case onvif.ServiceGetServiceCapabilities:
