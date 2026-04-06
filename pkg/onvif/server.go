@@ -11,6 +11,7 @@ import (
 type OnvifProfile struct {
 	Name    string   `yaml:"name"`
 	Port    int      `yaml:"port"`    // if > 0, this camera gets its own HTTP server on this port
+	IP      string   `yaml:"ip"`      // optional: bind camera server and WS-Discovery to this IP (for multi-camera setups where each camera needs its own IP)
 	Streams []string `yaml:"streams"`
 }
 

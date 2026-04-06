@@ -48,13 +48,34 @@ func Init() {
 			continue
 		}
 		p := profile // capture loop variable
-		uuid := onvif.RegisterDevice(p.Port, p.Name)
+		var ip net.IP
+		if p.IP != "" {
+			ip = net.ParseIP(p.IP)
+			if ip != nil {
+				ip = ip.To4()
+			}
+			if ip == nil {
+				log.Warn().Msgf("[onvif] invalid ip %q for profile %s, using all interfaces", p.IP, p.Name)
+			}
+		}
+		uuid := onvif.RegisterDevice(p.Port, p.Name, ip)
 		handler := makeOnvifHandler([]onvif.OnvifProfile{p}, api.Port, p.Name)
-		go startCameraServer(p.Port, uuid, handler)
+		go startCameraServer(ip, p.Port, uuid, handler)
+	}
+
+	// Include the main go2rtc device in WS-Discovery only when at least one
+	// profile has no dedicated port — otherwise Unifi Protect would also
+	// discover the generic "go2rtc" device and display its name pre-adoption.
+	includeMain := len(OnvifProfiles) == 0
+	for _, p := range OnvifProfiles {
+		if p.Port <= 0 {
+			includeMain = true
+			break
+		}
 	}
 
 	// WS-Discovery server (must start after all RegisterDevice calls).
-	if err := onvif.StartDiscoveryServer(api.Port, "go2rtc"); err != nil {
+	if err := onvif.StartDiscoveryServer(api.Port, "go2rtc", includeMain); err != nil {
 		log.Warn().Err(err).Msg("[onvif] WS-Discovery server failed to start (port 3702 in use?)")
 	} else {
 		log.Info().Int("port", 3702).Msg("[onvif] WS-Discovery server listening")
@@ -64,14 +85,20 @@ func Init() {
 var log zerolog.Logger
 
 // startCameraServer starts a standalone HTTP server for a single ONVIF camera profile.
-func startCameraServer(port int, uuid string, handler http.HandlerFunc) {
-	addr := ":" + strconv.Itoa(port)
+// ip may be nil to listen on all interfaces, or a specific IP for virtual-IP setups.
+func startCameraServer(ip net.IP, port int, uuid string, handler http.HandlerFunc) {
+	var addr string
+	if ip != nil {
+		addr = ip.String() + ":" + strconv.Itoa(port)
+	} else {
+		addr = ":" + strconv.Itoa(port)
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Error().Err(err).Msgf("[onvif] camera server failed to start on port %d", port)
+		log.Error().Err(err).Msgf("[onvif] camera server failed to start on %s", addr)
 		return
 	}
-	log.Info().Msgf("[onvif] camera server listening on port %d (uuid=%s)", port, uuid)
+	log.Info().Msgf("[onvif] camera server listening on %s (uuid=%s)", addr, uuid)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/onvif/", handler)
@@ -155,7 +182,9 @@ func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int, deviceName
 		case onvif.DeviceGetDeviceInformation:
 			// important for Hass: SerialNumber (unique server ID)
 			// r.Host includes port so each per-camera server has a unique serial.
-			b = onvif.GetDeviceInformationResponse("", deviceName, app.Version, r.Host)
+			// Manufacturer = camera name (shown in Unifi Protect pre-adoption scope display).
+			// Model = "go2rtc" (shown post-adoption; also used by Unifi Protect as pre-adoption model label).
+			b = onvif.GetDeviceInformationResponse(deviceName, "go2rtc", app.Version, r.Host)
 
 		case onvif.ServiceGetServiceCapabilities:
 			// important for Hass

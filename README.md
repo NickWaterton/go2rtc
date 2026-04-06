@@ -1366,10 +1366,57 @@ streams:
 
 go2rtc automatically listens on UDP port `3702` and responds to WS-Discovery Probe messages. Unifi Protect and other ONVIF clients will find it without any manual IP configuration. If running in Docker, use `--network host` to allow multicast traffic through.
 
+**Multiple cameras and Unifi Protect auto-discovery:**
+
+Unifi Protect identifies cameras by MAC address. Because all per-camera HTTP servers run on the same host, they share the same MAC and Unifi Protect treats them as a single device. To make each camera appear as an independent device, give each one a dedicated IP address on a separate virtual network interface (`macvlan`). A macvlan interface has its own unique MAC address, so Unifi Protect sees it as a physically distinct camera.
+
+Add an `ip:` field to any profile that needs its own identity:
+
+```yaml
+onvif:
+  profiles:
+    - name: Frontdoor
+      port: 8081
+      # no ip: — uses the host's main IP, discovered automatically
+      streams:
+        - frontdoor#res=1920x1080#codec=H264#framerate=15
+
+    - name: Backyard
+      port: 8082
+      ip: 192.168.1.192     # dedicated virtual IP on macvlan0
+      streams:
+        - backyard#res=1920x1080#codec=H264#framerate=15
+```
+
+Create the macvlan interface on Linux (replace `eth0` and the IP/prefix to match your network):
+
+```bash
+# Temporary (lost on reboot)
+sudo ip link add macvlan0 link eth0 type macvlan mode bridge
+sudo ip addr add 192.168.1.192/24 dev macvlan0
+sudo ip link set macvlan0 up
+```
+
+To make it permanent with **netplan** (Ubuntu/Debian):
+
+```yaml
+# /etc/netplan/00-installer-config.yaml  (merge with existing config)
+network:
+  macvlans:
+    macvlan0:
+      link: eth0
+      mode: bridge
+      addresses: [192.168.1.192/24]
+```
+
+Then run `sudo netplan apply`.
+
+> **Note:** If Unifi Protect previously saw the virtual IP with the old MAC (before macvlan was set up), its ARP cache may be stale. Run `arp -d <virtual-ip>` on the UNVR via SSH to force a fresh lookup.
+
 **Example Unifi Protect setup:**
-1. In Unifi Protect: **Add Device → ONVIF → Scan** — go2rtc appears automatically.
-2. If auto-scan fails, add manually: Host = `<go2rtc IP>`, Port = `1984`.
-3. Each profile defined in `onvif.profiles` appears as a separate camera channel.
+1. In Unifi Protect: **Add Device → ONVIF → Scan** — go2rtc cameras appear automatically.
+2. If auto-scan fails, use **Advanced Adoption**: enter `<ip>:<port>` for each camera (e.g. `192.168.1.191:8081` and `192.168.1.192:8082`).
+3. Each profile defined in `onvif.profiles` with its own `port` appears as a separate camera.
 
 **Example Dahua NVR configuration:**
 - **Channel**: <camera channel on NVR>
