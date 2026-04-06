@@ -1289,7 +1289,9 @@ With ONVIF support, go2rtc can:
 - Provide `GetOSDs` responses that show the configured camera name and a timestamp overlay in supported NVRs.
 - Maintain a **consistent camera order** to prevent issues with NVRs that rely on `GetProfilesResponse` for identification.
 
-**Example Configuration**
+**Example Configuration — single ONVIF device, multiple profiles**
+
+All cameras appear as profiles (channels) of one ONVIF device on the main API port.
 
 ```yaml
 onvif:
@@ -1313,6 +1315,42 @@ streams:
   backyard_lq:
     - rtsp://admin:password@192.168.1.11/stream2
 ```
+
+**Example Configuration — separate ONVIF device per camera (for Unifi Protect)**
+
+Unifi Protect treats each ONVIF device it adds as a separate camera. To have cameras
+appear as distinct devices rather than channels, assign each profile its own `port`.
+go2rtc will start a lightweight HTTP server on that port acting as an independent
+ONVIF device. All devices are automatically advertised via WS-Discovery.
+
+```yaml
+onvif:
+  profiles:
+    - name: Front Door
+      port: 8081          # this camera is a standalone ONVIF device on :8081
+      streams:
+        - frontdoor#res=1920x1080#codec=H264#framerate=15#kbps=4000
+        - frontdoor_lq#res=640x360#codec=H264#framerate=10#kbps=512
+    - name: Backyard
+      port: 8082          # this camera is a standalone ONVIF device on :8082
+      streams:
+        - backyard#res=1920x1080#codec=H265
+        - backyard_lq#res=1280x720#codec=H265#audio=AAC
+
+streams:
+  frontdoor:
+    - rtsp://admin:password@192.168.1.10/stream1
+  frontdoor_lq:
+    - rtsp://admin:password@192.168.1.10/stream2
+  backyard:
+    - rtsp://admin:password@192.168.1.11/stream1
+  backyard_lq:
+    - rtsp://admin:password@192.168.1.11/stream2
+```
+
+> When using per-camera ports, open those ports in your firewall and make sure
+> they are reachable from Unifi Protect. The main API port (default 1984) still
+> serves all profiles as a single multi-channel device for backward compatibility.
 
 **Stream metadata parameters** (appended to the stream name with `#`):
 

@@ -10,6 +10,7 @@ import (
 
 type OnvifProfile struct {
 	Name    string   `yaml:"name"`
+	Port    int      `yaml:"port"`    // if > 0, this camera gets its own HTTP server on this port
 	Streams []string `yaml:"streams"`
 }
 

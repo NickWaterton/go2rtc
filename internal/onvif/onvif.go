@@ -29,18 +29,31 @@ func Init() {
 
 	app.LoadConfig(&cfg)
 	OnvifProfiles = cfg.Onvif.OnvifProfiles
-    
+
 	log = app.GetLogger("onvif")
 
 	streams.HandleFunc("onvif", streamOnvif)
 
-	// ONVIF server on all suburls
-	api.HandleFunc("/onvif/", onvifDeviceService)
+	// Main ONVIF server on the go2rtc API port — serves all profiles.
+	api.HandleFunc("/onvif/", makeOnvifHandler(OnvifProfiles, api.Port))
 
-	// ONVIF client autodiscovery
+	// ONVIF client autodiscovery endpoint
 	api.HandleFunc("api/onvif", apiOnvif)
 
-	// WS-Discovery server so ONVIF clients (e.g. Unifi Protect) can find this instance
+	// Per-camera ONVIF servers: each profile with port > 0 gets its own
+	// HTTP server that acts as an independent ONVIF device. Register them
+	// with the WS-Discovery system before starting the discovery server.
+	for _, profile := range OnvifProfiles {
+		if profile.Port <= 0 {
+			continue
+		}
+		p := profile // capture loop variable
+		uuid := onvif.RegisterDevice(p.Port)
+		handler := makeOnvifHandler([]onvif.OnvifProfile{p}, api.Port)
+		go startCameraServer(p.Port, uuid, handler)
+	}
+
+	// WS-Discovery server (must start after all RegisterDevice calls).
 	if err := onvif.StartDiscoveryServer(api.Port); err != nil {
 		log.Warn().Err(err).Msg("[onvif] WS-Discovery server failed to start (port 3702 in use?)")
 	} else {
@@ -50,32 +63,187 @@ func Init() {
 
 var log zerolog.Logger
 
+// startCameraServer starts a standalone HTTP server for a single ONVIF camera profile.
+func startCameraServer(port int, uuid string, handler http.HandlerFunc) {
+	addr := ":" + strconv.Itoa(port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Error().Err(err).Msgf("[onvif] camera server failed to start on port %d", port)
+		return
+	}
+	log.Info().Msgf("[onvif] camera server listening on port %d (uuid=%s)", port, uuid)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/onvif/", handler)
+
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if err := srv.Serve(ln); err != nil {
+		log.Error().Err(err).Msgf("[onvif] camera server error on port %d", port)
+	}
+}
+
+// makeOnvifHandler returns an ONVIF device service handler scoped to the given
+// profiles. mainAPIPort is the go2rtc API port used for snapshot URLs (the
+// snapshot endpoint always lives on the main server, not per-camera servers).
+func makeOnvifHandler(profiles []onvif.OnvifProfile, mainAPIPort int) http.HandlerFunc {
+	// Local camera-name lookup scoped to this handler's profiles.
+	cameraName := func(streamName string) string {
+		for _, p := range profiles {
+			for _, s := range p.Streams {
+				name, _, _, _, _, _, _ := onvif.ParseStream(s)
+				if name == streamName {
+					return p.Name
+				}
+			}
+		}
+		return "Unknown Camera"
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		operation := onvif.GetRequestAction(b)
+		if operation == "" {
+			http.Error(w, "malformed request body", http.StatusBadRequest)
+			return
+		}
+
+		log.Trace().Msgf("[onvif] server request %s %s:\n%s", r.Method, r.RequestURI, b)
+
+		switch operation {
+		case onvif.DeviceGetNetworkInterfaces, // important for Hass
+			onvif.DeviceGetSystemDateAndTime, // important for Hass
+			onvif.DeviceGetDiscoveryMode,
+			onvif.DeviceGetDNS,
+			onvif.DeviceGetHostname,
+			onvif.DeviceGetNetworkDefaultGateway,
+			onvif.DeviceGetNetworkProtocols,
+			onvif.DeviceGetNTP,
+			onvif.DeviceGetScopes,
+			onvif.MediaGetAudioEncoderConfigurations,
+			onvif.MediaGetAudioSources,
+			onvif.MediaGetAudioSourceConfigurations:
+			b = onvif.StaticResponse(operation)
+
+		case onvif.MediaGetVideoEncoderConfigurations:
+			b = onvif.GetVideoEncoderConfigurationsResponse(profiles)
+
+		case onvif.DeviceGetCapabilities:
+			// important for Hass: Media section
+			b = onvif.GetCapabilitiesResponse(r.Host)
+
+		case onvif.DeviceGetServices:
+			b = onvif.GetServicesResponse(r.Host)
+
+		case onvif.DeviceGetOSDs:
+			token := onvif.FindTagValue(b, "ConfigurationToken")
+			b = onvif.GetOSDsResponse(token, cameraName(onvif.StreamNameFromConfigToken(token)))
+
+		case onvif.DeviceGetOSDOptions:
+			b = onvif.GetOSDOptionsResponse()
+
+		case onvif.DeviceGetDeviceInformation:
+			// important for Hass: SerialNumber (unique server ID)
+			// r.Host includes port so each per-camera server has a unique serial.
+			b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
+
+		case onvif.ServiceGetServiceCapabilities:
+			// important for Hass
+			b = onvif.GetMediaServiceCapabilitiesResponse()
+
+		case onvif.DeviceSystemReboot:
+			b = onvif.StaticResponse(operation)
+
+			time.AfterFunc(time.Second, func() {
+				os.Exit(0)
+			})
+
+		case onvif.MediaGetVideoSources:
+			b = onvif.GetVideoSourcesResponse(profiles)
+
+		case onvif.MediaGetProfiles:
+			// important for Hass: H264 codec, width, height
+			b = onvif.GetProfilesResponse(profiles)
+
+		case onvif.MediaGetProfile:
+			token := onvif.FindTagValue(b, "ProfileToken")
+			for _, profile := range profiles {
+				for _, stream := range profile.Streams {
+					name, _, _, _, _, _, _ := onvif.ParseStream(stream)
+					if name == token {
+						b = onvif.GetProfileResponse(profile)
+						break
+					}
+				}
+			}
+
+		case onvif.MediaGetVideoSourceConfigurations:
+			// important for Happytime Onvif Client
+			b = onvif.GetVideoSourceConfigurationsResponse(profiles)
+
+		case onvif.MediaGetVideoSourceConfiguration:
+			token := onvif.FindTagValue(b, "ConfigurationToken")
+			b = onvif.GetVideoSourceConfigurationResponse(token, profiles)
+
+		case onvif.MediaGetStreamUri:
+			host, _, err := net.SplitHostPort(r.Host)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			uri := "rtsp://" + host + ":" + rtsp.Port + "/" + onvif.FindTagValue(b, "ProfileToken")
+			log.Debug().Msgf("[onvif] MediaGetStreamUri URL: %s", uri)
+			b = onvif.GetStreamUriResponse(uri)
+
+		case onvif.MediaGetSnapshotUri:
+			// Snapshot is always served by the main go2rtc API, not the per-camera
+			// server, so use mainAPIPort rather than whatever port this request arrived on.
+			host, _, err := net.SplitHostPort(r.Host)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			uri := "http://" + host + ":" + strconv.Itoa(mainAPIPort) + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
+			log.Debug().Msgf("[onvif] Snapshot URL: %s", uri)
+			b = onvif.GetSnapshotUriResponse(uri)
+
+		default:
+			http.Error(w, "unsupported operation", http.StatusBadRequest)
+			log.Warn().Msgf("[onvif] unsupported operation: %s", operation)
+			log.Debug().Msgf("[onvif] unsupported request:\n%s", b)
+			return
+		}
+
+		log.Trace().Msgf("[onvif] server response:\n%s", b)
+
+		w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+		if _, err = w.Write(b); err != nil {
+			log.Error().Err(err).Caller().Send()
+		}
+	}
+}
+
+// GetConfiguredStreams returns the stream names that should be accessible via ONVIF.
 func GetConfiguredStreams() []string {
 	if len(OnvifProfiles) == 0 {
 		return streams.GetAllNames()
 	}
 
-	var streamsList []string
+	var names []string
 	for _, profile := range OnvifProfiles {
 		for _, stream := range profile.Streams {
 			name, _, _, _, _, _, _ := onvif.ParseStream(stream)
-			streamsList = append(streamsList, name)
+			names = append(names, name)
 		}
 	}
-
-	return streamsList
-}
-
-func GetCameraNameByStream(streamName string) string {
-	for _, profile := range OnvifProfiles {
-		for _, stream := range profile.Streams {
-			name, _, _, _, _, _, _ := onvif.ParseStream(stream)
-			if name == streamName {
-				return profile.Name
-			}
-		}
-	}
-	return "Unknown Camera"
+	return names
 }
 
 func streamOnvif(rawURL string) (core.Producer, error) {
@@ -92,128 +260,6 @@ func streamOnvif(rawURL string) (core.Producer, error) {
 	log.Debug().Msgf("[onvif] new uri=%s", uri)
 
 	return streams.GetProducer(uri)
-}
-
-func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
-	b, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-    
-	operation := onvif.GetRequestAction(b)
-	if operation == "" {
-		http.Error(w, "malformed request body", http.StatusBadRequest)
-		return
-	}
-
-	log.Trace().Msgf("[onvif] server request %s %s:\n%s", r.Method, r.RequestURI, b)
-
-	switch operation {
-	case onvif.DeviceGetNetworkInterfaces, // important for Hass
-		onvif.DeviceGetSystemDateAndTime, // important for Hass
-		onvif.DeviceGetDiscoveryMode,
-		onvif.DeviceGetDNS,
-		onvif.DeviceGetHostname,
-		onvif.DeviceGetNetworkDefaultGateway,
-		onvif.DeviceGetNetworkProtocols,
-		onvif.DeviceGetNTP,
-		onvif.DeviceGetScopes,
-		//onvif.MediaGetVideoEncoderConfigurations,
-		onvif.MediaGetAudioEncoderConfigurations,
-		onvif.MediaGetAudioSources,
-		onvif.MediaGetAudioSourceConfigurations:
-		b = onvif.StaticResponse(operation)
-        
-    case onvif.MediaGetVideoEncoderConfigurations:
-        b = onvif.GetVideoEncoderConfigurationsResponse(OnvifProfiles)
-
-	case onvif.DeviceGetCapabilities:
-		// important for Hass: Media section
-		b = onvif.GetCapabilitiesResponse(r.Host)
-
-	case onvif.DeviceGetServices:
-		b = onvif.GetServicesResponse(r.Host)
-        
-	case onvif.DeviceGetOSDs:
-		token := onvif.FindTagValue(b, "ConfigurationToken")
-		b = onvif.GetOSDsResponse(token, GetCameraNameByStream(onvif.StreamNameFromConfigToken(token)))
-
-	case onvif.DeviceGetOSDOptions:
-		b = onvif.GetOSDOptionsResponse()
-
-	case onvif.DeviceGetDeviceInformation:
-		// important for Hass: SerialNumber (unique server ID)
-		b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
-
-	case onvif.ServiceGetServiceCapabilities:
-		// important for Hass
-		// TODO: check path links to media
-		b = onvif.GetMediaServiceCapabilitiesResponse()
-
-	case onvif.DeviceSystemReboot:
-		b = onvif.StaticResponse(operation)
-
-		time.AfterFunc(time.Second, func() {
-			os.Exit(0)
-		})
-
-	case onvif.MediaGetVideoSources:
-		b = onvif.GetVideoSourcesResponse(OnvifProfiles)
-
-	case onvif.MediaGetProfiles:
-		// important for Hass: H264 codec, width, height
-		b = onvif.GetProfilesResponse(OnvifProfiles)
-
-	case onvif.MediaGetProfile:
-		token := onvif.FindTagValue(b, "ProfileToken")
-		for _, profile := range OnvifProfiles {
-			for _, stream := range profile.Streams {
-				name, _, _, _, _, _, _ := onvif.ParseStream(stream)
-				if name == token {
-					b = onvif.GetProfileResponse(profile)
-					break
-				}
-			}
-		}
-
-	case onvif.MediaGetVideoSourceConfigurations:
-		// important for Happytime Onvif Client
-		b = onvif.GetVideoSourceConfigurationsResponse(OnvifProfiles)
-
-	case onvif.MediaGetVideoSourceConfiguration:
-		token := onvif.FindTagValue(b, "ConfigurationToken")
-		b = onvif.GetVideoSourceConfigurationResponse(token, OnvifProfiles)
-
-	case onvif.MediaGetStreamUri:
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + onvif.FindTagValue(b, "ProfileToken")
-        log.Debug().Msgf("[onvif] MediaGetStreamUri URL: %s", uri)
-		b = onvif.GetStreamUriResponse(uri)
-
-	case onvif.MediaGetSnapshotUri:
-		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
-        log.Debug().Msgf("[onvif] Snapshot URL: %s", uri)
-		b = onvif.GetSnapshotUriResponse(uri)
-
-	default:
-		http.Error(w, "unsupported operation", http.StatusBadRequest)
-		log.Warn().Msgf("[onvif] unsupported operation: %s", operation)
-		log.Debug().Msgf("[onvif] unsupported request:\n%s", b)
-		return
-	}
-
-	log.Trace().Msgf("[onvif] server response:\n%s", b)
-
-	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
-	if _, err = w.Write(b); err != nil {
-		log.Error().Err(err).Caller().Send()
-	}
 }
 
 func apiOnvif(w http.ResponseWriter, r *http.Request) {
