@@ -47,6 +47,10 @@ func Init() {
 		if profile.Port <= 0 {
 			continue
 		}
+		if len(profile.Streams) == 0 {
+			log.Debug().Msgf("[onvif] skipping profile %s: no streams defined", profile.Name)
+			continue
+		}
 		p := profile // capture loop variable
 		var ip net.IP
 		if p.IP != "" {
@@ -68,7 +72,7 @@ func Init() {
 	// discover the generic "go2rtc" device and display its name pre-adoption.
 	includeMain := len(OnvifProfiles) == 0
 	for _, p := range OnvifProfiles {
-		if p.Port <= 0 {
+		if p.Port <= 0 || len(p.Streams) == 0 {
 			includeMain = true
 			break
 		}
